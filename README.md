@@ -1,4 +1,4 @@
-# Flame in Freefall: team context (paste this into BOTH AI chats)
+# Flame in Freefall: team context 
 
 NASA Space Apps 2026, Kuala Lumpur (virtual). Hackathon 14-15 Nov, submit before 23:59 on 15 Nov.
 Challenge: "Flame in Freefall: SI-Powered Fire Safety Insights from Microgravity Combustion Data".
