@@ -1,4 +1,0 @@
-investigation_id,test_id,fuel,o2_pct,pressure_kpa,flow_cm_s,diluent,outcome,metric_name,metric_value,metric_unit,source_doc,source_page,verified,notes
-acme_cfi_g,DUMMY-1,propane,21,101.3,,N2,sustained,,,,,,dummy,"DUMMY ROW for building the UI. Delete before submission."
-flex,DUMMY-2,heptane,30,70.3,,CO2,extinguished,,,,,,dummy,"DUMMY ROW for building the UI. Delete before submission."
-bass_ii,DUMMY-3,PMMA,24,101.3,10,,sustained,spread_rate,1.5,mm/s,,,dummy,"DUMMY ROW for building the UI. Delete before submission."
