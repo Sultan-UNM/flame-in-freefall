@@ -1,27 +1,37 @@
 from pathlib import Path
+import time
 import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import errors, types
+from constants import MOON_O2_MIN_PCT, MOON_P_MAX_KPA
 from data_loader import load_investigations, load_tests
 
 st.set_page_config(page_title="Assistant | Flame in Freefall", layout="wide")
 st.title("4. Assistant")
 
 BASE_DIR = Path(__file__).parent.parent
-PROMPT_PATH = BASE_DIR / "assistant_prompt.txt"
-MODEL_NAME = "gemini-3.8-flash"
+PROMPT_PATH = BASE_DIR / "assistant_prompt.md"
+MODEL_NAME = "gemini-3.5-flash"
 
 
 def load_system_prompt() -> str:
-    if PROMPT_PATH.exists():
-        return PROMPT_PATH.read_text(encoding="utf-8").strip()
-    return (
+    fallback = (
         "Answer strictly in English using only the provided catalog data. "
         "Always cite the source investigation by both its id and name. "
         'If the answer is not present in the data, reply: "Not in the catalog data."'
     )
-
+    if PROMPT_PATH.exists():
+        raw = PROMPT_PATH.read_text(encoding="utf-8")
+        parts = raw.split("---")
+        if len(parts) >= 3:
+            extracted = parts[1].strip()
+            if extracted:
+                return extracted
+        stripped = raw.strip()
+        if stripped:
+            return stripped
+    return fallback
 
 def fmt_num(val) -> str:
     if pd.isna(val):
@@ -36,18 +46,34 @@ def build_catalog_context() -> str:
     inv_df = load_investigations()
     tests_df = load_tests()
 
-    inv_Display = inv_df.fillna("no data")
-    inv_csv_text = inv_Display.to_csv(index=False)
+    inv_display = inv_df.astype(object).fillna("no data")
+    inv_csv_text = inv_display.to_csv(index=False)
 
     summary_rows = []
     if not tests_df.empty and "investigation_id" in tests_df.columns:
         for inv_id, grp in tests_df.groupby("investigation_id", dropna=False):
             inv_id_str = "no data" if pd.isna(inv_id) else str(inv_id)
-            count = len(grp)
+            count = int(len(grp))
             o2_min = fmt_num(grp["o2_pct"].min()) if "o2_pct" in grp else "no data"
             o2_max = fmt_num(grp["o2_pct"].max()) if "o2_pct" in grp else "no data"
             p_min = fmt_num(grp["pressure_kpa"].min()) if "pressure_kpa" in grp else "no data"
             p_max = fmt_num(grp["pressure_kpa"].max()) if "pressure_kpa" in grp else "no data"
+
+            if "o2_pct" in grp and "pressure_kpa" in grp:
+                in_moon = (grp["o2_pct"] >= MOON_O2_MIN_PCT) & (
+                    grp["pressure_kpa"] <= MOON_P_MAX_KPA
+                )
+                moon_count = int(in_moon.sum())
+            else:
+                moon_count = 0
+
+            if "verified" in grp:
+                verified_count = int(
+                    (grp["verified"].fillna("").astype(str).str.strip().str.lower() == "yes").sum()
+                )
+            else:
+                verified_count = 0
+
             summary_rows.append(
                 {
                     "investigation_id": inv_id_str,
@@ -56,6 +82,8 @@ def build_catalog_context() -> str:
                     "o2_max_pct": o2_max,
                     "pressure_min_kpa": p_min,
                     "pressure_max_kpa": p_max,
+                    "moon_zone_test_count": moon_count,
+                    "verified_yes_count": verified_count,
                 }
             )
 
@@ -110,7 +138,7 @@ if user_query:
     with st.chat_message("assistant"):
         if not api_key:
             err_msg = "Cannot query Gemini: `GEMINI_API_KEY` is missing in `.streamlit/secrets.toml`."
-            st.warning(err_msg)
+            st.markdown(err_msg)
             st.session_state.messages.append({"role": "assistant", "content": err_msg})
         else:
             system_prompt = load_system_prompt()
@@ -128,43 +156,57 @@ if user_query:
                 + f"=== USER QUESTION ===\n{user_query}"
             )
 
+            http_opts = types.HttpOptions(
+                timeout=30_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
             client = genai.Client(
                 api_key=api_key,
-                http_options=types.HttpOptions(
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
+                http_options=http_opts,
             )
 
+            print(f"[Assistant] full_prompt length: {len(full_prompt)} chars", flush=True)
+            t0 = time.perf_counter()
             try:
-                placeholder = st.empty()
-                collected_chunks: list[str] = []
-                for chunk in client.models.generate_content_stream(
-                    model=MODEL_NAME,
-                    contents=full_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=0.1,
-                    ),
-                ):
-                    if chunk.text:
-                        collected_chunks.append(chunk.text)
-                        placeholder.markdown("".join(collected_chunks))
+                with st.spinner("Thinking..."):
+                    response = client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            temperature=0.2,
+                            max_output_tokens=1500,
+                        ),
+                    )
+                elapsed = time.perf_counter() - t0
+                print(f"[Assistant] Request completed in {elapsed:.2f} s", flush=True)
 
-                answer = "".join(collected_chunks).strip() or "Not in the catalog data."
-                placeholder.markdown(answer)
+                answer = (response.text or "").strip() or "Not in the catalog data."
+                st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             except errors.ClientError as e:
+                elapsed = time.perf_counter() - t0
+                print(f"[Assistant] ClientError after {elapsed:.2f} s: {e}", flush=True)
                 if e.code == 429:
-                    msg = "Rate limit exceeded (HTTP 429). Please wait a minute and try again."
+                    msg = f"Rate limit exceeded (HTTP 429): {e.message or e}"
                 else:
-                    msg = f"Gemini API client error (HTTP {e.code}): {e.message}"
-                st.error(msg)
+                    msg = f"Gemini API client error (HTTP {e.code}): {e.message or e}"
+                st.markdown(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})
             except errors.APIError as e:
-                msg = f"Gemini API server error: {e.message if hasattr(e, 'message') else e}"
-                st.error(msg)
+                elapsed = time.perf_counter() - t0
+                print(f"[Assistant] APIError after {elapsed:.2f} s: {e}", flush=True)
+                code = getattr(e, "code", "unknown")
+                detail = getattr(e, "message", None) or str(e)
+                msg = f"Gemini API error (HTTP {code}): {detail}"
+                st.markdown(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})
             except Exception as e:
-                msg = f"Unexpected connection error ({type(e).__name__}): {e}"
-                st.error(msg)
+                elapsed = time.perf_counter() - t0
+                print(f"[Assistant] Exception after {elapsed:.2f} s: {e}", flush=True)
+                if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                    msg = f"Request timed out after 30 seconds ({type(e).__name__}): {e}"
+                else:
+                    msg = f"Connection error ({type(e).__name__}): {e}"
+                st.markdown(msg)
                 st.session_state.messages.append({"role": "assistant", "content": msg})

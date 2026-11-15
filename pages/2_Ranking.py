@@ -3,11 +3,11 @@ import streamlit as st
 from data_loader import load_investigations, load_tests
 
 try:
-    from scoring import score_investigations
+    from scoring import DEFAULT_WEIGHTS, environment_basis, score_investigations
 
     USING_STUB = False
 except ImportError:
-    from scoring_stub import score_investigations
+    from scoring_stub import DEFAULT_WEIGHTS, environment_basis, score_investigations
 
     USING_STUB = True
 
@@ -16,7 +16,7 @@ st.title("2. Ranking")
 
 if USING_STUB:
     st.warning(
-        "Using fallback `scoring_stub.py` (score = number of test conditions). "
+        "Using fallback `scoring_stub.py`. "
         "Official `scoring.py` module from Person A is not found yet."
     )
 
@@ -30,40 +30,34 @@ selected_env = st.radio(
     horizontal=True,
 )
 
-st.subheader("Scoring Weights")
-col1, col2, col3 = st.columns(3)
-with col1:
-    w_atmosphere = st.slider(
-        "Weight 1: Atmosphere Match (placeholder)",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-    )
-with col2:
-    w_fuel = st.slider(
-        "Weight 2: Fuel & Geometry Relevance (placeholder)",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-    )
-with col3:
-    w_safety = st.slider(
-        "Weight 3: Data Completeness & Safety Role (placeholder)",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-    )
-
-weights = {
-    "weight_1": w_atmosphere,
-    "weight_2": w_fuel,
-    "weight_3": w_safety,
+WEIGHT_LABELS = {
+    "zone_match": "Zone Match",
+    "fuel_relevance": "Fuel Relevance",
+    "role_relevance": "Role Relevance",
+    "verified_share": "Verified Share",
 }
 
-ranked_df = score_investigations(inv_df, tests_df, selected_env, weights)
+weight_keys = ["zone_match", "fuel_relevance", "role_relevance", "verified_share"]
+
+st.subheader("Scoring Weights")
+cols = st.columns(len(weight_keys))
+weights: dict[str, float] = {}
+
+for col, key in zip(cols, weight_keys):
+    default_val = float(DEFAULT_WEIGHTS[key])
+    max_val = max(1.0, default_val * 2.0)
+    step_val = 0.05 if max_val <= 1.0 else 0.5
+    with col:
+        weights[key] = st.slider(
+            WEIGHT_LABELS.get(key, key),
+            min_value=0.0,
+            max_value=float(max_val),
+            value=default_val,
+            step=float(step_val),
+            key=f"slider_{key}",
+        )
+
+ranked_df = score_investigations(inv_df, tests_df, selected_env, weights=weights)
 
 display_df = ranked_df.copy()
 for col in display_df.columns:
@@ -72,4 +66,29 @@ for col in display_df.columns:
     )
 
 st.subheader(f"Ranked Investigations for {selected_env} ({len(display_df)})")
-st.dataframe(display_df, use_container_width=True, hide_index=True)
+st.info(str(environment_basis(selected_env)))
+
+col_cfg = {}
+if "why" in display_df.columns:
+    col_cfg["why"] = st.column_config.TextColumn("Why", width="large")
+if "reason" in display_df.columns:
+    col_cfg["reason"] = st.column_config.TextColumn("Reason", width="large")
+
+st.dataframe(
+    display_df,
+    column_config=col_cfg,
+    use_container_width=True,
+    hide_index=True,
+)
+
+st.caption("BASS-II pressure is assumed (1 atm)")
+
+explanation_col = "why" if "why" in display_df.columns else ("reason" if "reason" in display_df.columns else None)
+if explanation_col and not display_df.empty:
+    with st.expander("Detailed Scoring Explanations"):
+        for _, row in display_df.iterrows():
+            inv_id = row.get("id", "no data")
+            inv_name = row.get("name", "no data")
+            inv_score = row.get("score", "no data")
+            inv_why = row.get(explanation_col, "no data")
+            st.markdown(f"**{inv_id} — {inv_name}** (Score: `{inv_score}`): {inv_why}")

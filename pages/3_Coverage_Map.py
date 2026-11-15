@@ -73,6 +73,23 @@ for col in hover_cols:
     else:
         plot_df[f"{col}_display"] = "no data"
 
+is_verified_yes = (
+    plot_df["verified"].fillna("").astype(str).str.strip().str.lower() == "yes"
+)
+has_pressure_assumed = (
+    plot_df["notes"]
+    .fillna("")
+    .astype(str)
+    .str.upper()
+    .str.contains("PRESSURE ASSUMED", na=False)
+    if "notes" in plot_df.columns
+    else pd.Series(False, index=plot_df.index)
+)
+plot_df["marker_style"] = [
+    "Verified (PSI)" if (ver and not assumed) else "Unverified / Pressure assumed"
+    for ver, assumed in zip(is_verified_yes, has_pressure_assumed)
+]
+
 max_o2 = max(
     float(plot_df["o2_pct"].max()) if not plot_df.empty else 100.0,
     float(MOON_O2_MIN_PCT) + 20.0,
@@ -88,6 +105,11 @@ fig = px.scatter(
     x="o2_pct",
     y="pressure_kpa",
     color="investigation_id",
+    symbol="marker_style",
+    symbol_map={
+        "Verified (PSI)": "circle",
+        "Unverified / Pressure assumed": "circle-open",
+    },
     custom_data=[
         "test_id_display",
         "fuel_display",
@@ -95,19 +117,21 @@ fig = px.scatter(
         "outcome_display",
         "source_doc_display",
         "source_page_display",
+        "investigation_id",
     ],
     labels={
         "o2_pct": "O2 Concentration (%)",
         "pressure_kpa": "Pressure (kPa)",
         "investigation_id": "Investigation ID",
+        "marker_style": "Marker Type",
     },
     title="Test Conditions vs. Moon Base Target Zone",
 )
 
 fig.update_traces(
-    marker=dict(size=7, opacity=0.65),
+    marker=dict(size=8, opacity=0.75, line=dict(width=1.5)),
     hovertemplate=(
-        "<b>Investigation:</b> %{fullData.name}<br>"
+        "<b>Investigation:</b> %{customdata[6]}<br>"
         "<b>Test ID:</b> %{customdata[0]}<br>"
         "<b>O2 (%):</b> %{x}<br>"
         "<b>Pressure (kPa):</b> %{y}<br>"
@@ -148,12 +172,18 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 st.caption(
+    "Hollow markers: not yet cross-checked with PSI; BASS-II pressure is assumed (1 atm)"
+)
+st.caption(
     f"Rows excluded from chart due to missing O2 or pressure values: {missing_coords_count}"
 )
 
 in_moon_zone = plot_df[
     (plot_df["o2_pct"] >= MOON_O2_MIN_PCT)
     & (plot_df["pressure_kpa"] <= MOON_P_MAX_KPA)
+]
+in_moon_zone_verified = in_moon_zone[
+    in_moon_zone["verified"].fillna("").astype(str).str.strip().str.lower() == "yes"
 ]
 moon_zone_solid = in_moon_zone[
     in_moon_zone["fuel_phase"]
@@ -165,15 +195,21 @@ moon_zone_solid = in_moon_zone[
 
 total_plotted = len(plot_df)
 moon_count = len(in_moon_zone)
+moon_verified_count = len(in_moon_zone_verified)
 moon_solid_count = len(moon_zone_solid)
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total Tests on Chart", total_plotted)
 col2.metric("Tests in Moon Base Zone", moon_count if moon_count > 0 else "no data")
-col3.metric(
-    "Solid-Fuel Tests in Moon Base Zone",
-    moon_solid_count if moon_count > 0 else "no data",
-)
+col3.metric("of which verified", moon_verified_count if moon_count > 0 else "no data")
+with col4:
+    st.metric(
+        "Solid-Fuel Tests in Moon Base Zone",
+        moon_solid_count if moon_count > 0 else "no data",
+    )
+    st.caption(
+        "BASS-II is the only solid-fuel investigation with test conditions in the catalog; pressure is assumed."
+    )
 
 if moon_count == 0:
     st.info("No data in the Moon base target zone for the selected filters (нет данных).")
