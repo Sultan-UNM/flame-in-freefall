@@ -75,12 +75,11 @@ with st.sidebar:
                 options=options,
                 default=options,
             )
-
-            tab_catalog, tab_compare = st.tabs(["Catalog", "Comparison"])
-
-with tab_catalog:
     search_query = st.text_input("Search by investigation name or fuel description", "")
 
+tab_catalog, tab_compare = st.tabs(["Catalog", "Comparison"])
+
+with tab_catalog:
     filtered_df = inv_df.copy()
     for col, allowed_vals in selected_filters.items():
         filtered_df = filtered_df[filtered_df[col].apply(fmt_val).isin(allowed_vals)]
